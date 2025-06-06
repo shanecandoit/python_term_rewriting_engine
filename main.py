@@ -1,4 +1,3 @@
-
 sample_rules = """
 And: 2
 And(true, true) -> true
@@ -21,6 +20,7 @@ Xor(false, false) -> false
 Not: 1
 Not(true) -> false
 Not(false) -> true
+Not(Not(x)) -> x
 """
 
 # --- AST Node Classes ---
@@ -41,6 +41,12 @@ class Constant(Term):
 
     def __repr__(self):
         return f"Constant({self.value})"
+
+    def __eq__(self, other):
+        # Constant(False) == Constant(False)
+        if isinstance(other, Constant):
+            return self.value == other.value
+        return False
 
 class Variable(Term):
     def __init__(self, name: str):
@@ -106,7 +112,6 @@ def parse_term_recursive(tokens: list, index: list) -> Term:
             elif index[0] < len(tokens) and tokens[index[0]] != ')':
                  raise ValueError(f"Expected ',' or ')' after argument for '{func_name}'")
 
-
         if index[0] >= len(tokens) or tokens[index[0]] != ')':
             raise ValueError(f"Expected ')' after arguments for '{func_name}'")
         index[0] += 1 # Consume ')'
@@ -139,8 +144,7 @@ def tokenize(expression: str):
             if current_token:
                 tokens.append(current_token)
                 current_token = ''
-            if char != ',':
-                tokens.append(char)
+            tokens.append(char) # Always append the delimiter
         elif char.isspace():
             if current_token:
                 tokens.append(current_token)
@@ -150,6 +154,139 @@ def tokenize(expression: str):
     if current_token:
         tokens.append(current_token)
     return tokens
+
+# --- Evaluate ---
+def parse_rules_and_assignments(rules_and_assignments_string: str):
+    rule_dict = {}
+    arity_dict = {}
+    assignment_map = {}
+    lines = rules_and_assignments_string.strip().split('\n')
+    current_rule_name = None
+
+    for line in lines:
+        if ':' in line and '->' not in line and '=' not in line: # Rule arity declaration
+            parts = line.split(':')
+            current_rule_name = parts[0].strip()
+            arity_dict[current_rule_name] = int(parts[1].strip())
+            rule_dict[current_rule_name] = []
+        elif '->' in line and current_rule_name is not None: # Rule definition
+            expression = line.strip()
+            lhs = expression.split('->')[0].strip()
+            rhs = expression.split('->')[1].strip()
+            rule_dict[current_rule_name].append((lhs, rhs))
+        elif '=' in line: # Assignment
+            parts = line.split('=')
+            var_name = parts[0].strip()
+            value_str = parts[1].strip()
+            if value_str == 'true':
+                assignment_map[var_name] = Constant(True)
+            elif value_str == 'false':
+                assignment_map[var_name] = Constant(False)
+            else:
+                raise ValueError(f"Unsupported assignment value: {value_str}")
+        elif not line.strip(): # Empty line
+            current_rule_name = None # Reset current rule context
+        else:
+            pass # Ignore other lines for now
+
+    return rule_dict, arity_dict, assignment_map
+
+def substitute_variables(ast: Term, assignments: dict) -> Term:
+    if isinstance(ast, Constant):
+        return ast
+    elif isinstance(ast, Variable):
+        if ast.name in assignments:
+            return assignments[ast.name] # Return the assigned Constant node
+        else:
+            return ast # Variable not in assignments, return as is
+    elif isinstance(ast, Function):
+        new_args = [substitute_variables(arg, assignments) for arg in ast.args]
+        return Function(ast.name, new_args)
+    else:
+        raise ValueError(f"Unknown term type during substitution: {type(ast)}")
+
+def match_pattern(pattern: Term, target: Term, bindings: dict) -> bool:
+    """
+    Attempts to match a pattern AST against a target AST, populating bindings.
+    Returns True if a match is found, False otherwise.
+    """
+    if isinstance(pattern, Constant):
+        return isinstance(target, Constant) and pattern.value == target.value
+    elif isinstance(pattern, Variable):
+        # If variable is already bound, check if target matches the bound value
+        if pattern.name in bindings:
+            return target == bindings[pattern.name]
+        else:
+            # Bind the variable to the target
+            bindings[pattern.name] = target
+            return True
+    elif isinstance(pattern, Function):
+        if not isinstance(target, Function) or pattern.name != target.name or len(pattern.args) != len(target.args):
+            return False
+        # Recursively match arguments
+        for p_arg, t_arg in zip(pattern.args, target.args):
+            if not match_pattern(p_arg, t_arg, bindings):
+                return False
+        return True
+    return False
+
+def apply_single_rule_pass(current_ast: Term, rules: dict, ast_trace: list) -> tuple[Term, bool]:
+    """
+    Attempts to apply one rule in a single pass over the AST.
+    Returns the modified AST and a boolean indicating if any change occurred.
+    """
+    changed = False
+    
+    # Helper to recursively apply rules
+    def _apply_recursive(node: Term) -> Term:
+        nonlocal changed
+        if isinstance(node, Function):
+            # First, apply rules to arguments
+            new_args = []
+            for arg in node.args:
+                new_arg = _apply_recursive(arg)
+                if new_arg != arg: # Check if argument changed
+                    changed = True
+                new_args.append(new_arg)
+            node = Function(node.name, new_args) # Create new function node with potentially changed args
+
+            # Then, try to apply rules to the current function node itself
+            for rule_name, rule_list in rules.items():
+                if node.name == rule_name: # Only consider rules for the current function's name
+                    for lhs_str, rhs_str in rule_list:
+                        lhs_ast = parse_expression(lhs_str)
+                        rhs_ast = parse_expression(rhs_str)
+                        
+                        bindings = {}
+                        if match_pattern(lhs_ast, node, bindings):
+                            # Apply the rule: substitute variables in RHS with bound values
+                            transformed_node = substitute_variables(rhs_ast, bindings)
+                            ast_trace.append((node, lhs_str, rhs_str, transformed_node)) # Record the transformation
+                            changed = True
+                            return transformed_node # Return the transformed node and stop for this rule
+        return node # No rule applied or not a Function node
+
+    new_ast = _apply_recursive(current_ast)
+    return new_ast, changed
+
+def evaluate(expression_string: str, rules_and_assignments_string: str) -> tuple[Term, list]:
+    rules, arities, assignments = parse_rules_and_assignments(rules_and_assignments_string)
+    
+    # Parse the initial expression
+    current_ast = parse_expression(expression_string)
+
+    # Apply assignments to the AST
+    current_ast = substitute_variables(current_ast, assignments)
+
+    # Initialize AST trace
+    ast_trace = []
+
+    # Apply rules iteratively until no more changes
+    changed = True
+    while changed:
+        current_ast, changed = apply_single_rule_pass(current_ast, rules, ast_trace)
+
+    return current_ast, ast_trace
 
 if __name__ == "__main__":
     rules, arity = parse_rules(sample_rules)
@@ -162,5 +299,24 @@ if __name__ == "__main__":
         print(f"{rule}:")
         for expr in expressions:
             print(f"  {expr}")
+
+    # Example usage of the new evaluate function
+    sample_rules_and_assignments = """
+And: 2
+And(true, true) -> true
+And(true, false) -> false
+
+x = true
+y = false
+"""
+    expression_to_evaluate = "And(x, y)"
+    evaluated_ast, trace = evaluate(expression_to_evaluate, sample_rules_and_assignments)
+    print(f"\nExpression '{expression_to_evaluate}' evaluated to: {evaluated_ast}")
+    print("\nAST Trace:")
+    for i, (before, lhs, rhs, after) in enumerate(trace):
+        print(f"Step {i+1}:")
+        print(f"  Before: {before}")
+        print(f"  Rule: {lhs} -> {rhs}")
+        print(f"  After: {after}")
 
     print('end')
