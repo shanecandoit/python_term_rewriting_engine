@@ -302,15 +302,16 @@ if __name__ == "__main__":
 
     # Example usage of the new evaluate function
     sample_rules_and_assignments = """
-And: 2
-And(true, true) -> true
-And(true, false) -> false
+    And: 2
+    And(true, true) -> true
+    And(true, false) -> false
 
-x = true
-y = false
-"""
+    x = true
+    y = false
+    """
     expression_to_evaluate = "And(x, y)"
     evaluated_ast, trace = evaluate(expression_to_evaluate, sample_rules_and_assignments)
+    print(f"\nGiven the rules and assignments:\n{sample_rules_and_assignments.strip()}")
     print(f"\nExpression '{expression_to_evaluate}' evaluated to: {evaluated_ast}")
     print("\nAST Trace:")
     for i, (before, lhs, rhs, after) in enumerate(trace):
