@@ -288,6 +288,146 @@ def evaluate(expression_string: str, rules_and_assignments_string: str) -> tuple
 
     return current_ast, ast_trace
 
+# --- Infix Expression Parsing with Shunting Yard Algorithm ---
+def parse_infix_expression(expression: str) -> Term:
+    """
+    Parses an infix expression (like "2 + 3*4") into an AST using the shunting yard algorithm.
+    """
+    tokens = tokenize_infix(expression)
+    output_queue = []
+    operator_stack = []
+    
+    precedence = {
+        '+': 1,
+        '-': 1,
+        '*': 2,
+        '/': 2,
+        '^': 3  # Exponentiation
+    }
+    
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        
+        # Numbers become Constant nodes
+        if token.isdigit():
+            output_queue.append(Constant(int(token)))
+        
+        # Variables (identifiers)
+        elif token.isalpha():
+            output_queue.append(Variable(token))
+        
+        # Left parenthesis
+        elif token == '(':
+            operator_stack.append(token)
+        
+        # Right parenthesis
+        elif token == ')':
+            while operator_stack and operator_stack[-1] != '(':
+                # Pop operators from stack to queue until '(' is found
+                handle_operator_popping(operator_stack, output_queue)
+            
+            if operator_stack and operator_stack[-1] == '(':
+                operator_stack.pop()  # Remove the '(' from stack
+            else:
+                raise ValueError("Mismatched parentheses in expression")
+        
+        # Operators
+        elif token in precedence:
+            # While there's an operator on top with higher/equal precedence, pop it
+            while (operator_stack and operator_stack[-1] != '(' and
+                   operator_stack[-1] in precedence and
+                   precedence[operator_stack[-1]] >= precedence[token]):
+                handle_operator_popping(operator_stack, output_queue)
+            
+            operator_stack.append(token)
+            
+        i += 1
+    
+    # Pop any remaining operators
+    while operator_stack:
+        if operator_stack[-1] == '(':
+            raise ValueError("Mismatched parentheses in expression")
+        handle_operator_popping(operator_stack, output_queue)
+    
+    # The output queue should now contain a single AST
+    if len(output_queue) != 1:
+        raise ValueError(f"Invalid expression: expected 1 result, got {len(output_queue)}")
+    
+    return output_queue[0]
+
+def handle_operator_popping(operator_stack: list, output_queue: list):
+    """Helper function to handle operator popping in the shunting yard algorithm."""
+    op = operator_stack.pop()
+    
+    # Map of operators to function names
+    op_to_func = {
+        '+': 'Add',
+        '-': 'Sub',
+        '*': 'Mul',
+        '/': 'Div',
+        '^': 'Pow'
+    }
+    
+    if op in op_to_func:
+        # Pop the right operand first (for non-commutative operations)
+        if len(output_queue) < 2:
+            raise ValueError(f"Not enough operands for operator {op}")
+        
+        right = output_queue.pop()
+        left = output_queue.pop()
+        
+        # Create function node for this operation
+        output_queue.append(Function(op_to_func[op], [left, right]))
+
+def tokenize_infix(expression: str) -> list:
+    """
+    Tokenizes an infix expression, handling numbers, operators, and parentheses.
+    """
+    tokens = []
+    i = 0
+    
+    while i < len(expression):
+        char = expression[i]
+        
+        # Skip whitespace
+        if char.isspace():
+            i += 1
+            continue
+            
+        # Handle numbers (multi-digit)
+        if char.isdigit():
+            num = char
+            j = i + 1
+            while j < len(expression) and expression[j].isdigit():
+                num += expression[j]
+                j += 1
+            tokens.append(num)
+            i = j
+            continue
+            
+        # Handle identifiers (variable names)
+        if char.isalpha():
+            name = char
+            j = i + 1
+            while j < len(expression) and (expression[j].isalnum() or expression[j] == '_'):
+                name += expression[j]
+                j += 1
+            tokens.append(name)
+            i = j
+            continue
+            
+        # Operators and parentheses (single characters)
+        if char in '+-*/^()':
+            tokens.append(char)
+            i += 1
+            continue
+            
+        # Unknown character
+        raise ValueError(f"Unknown character in expression: '{char}'")
+    
+    return tokens
+
 if __name__ == "__main__":
     rules, arity = parse_rules(sample_rules)
     # print rules and their arities
